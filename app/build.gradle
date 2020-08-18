@@ -6,7 +6,7 @@ android {
     compileSdkVersion app.compileSdkVersion
 
     defaultConfig {
-        applicationId "com.aqrlei.litelog.sample"
+        applicationId "com.aqrlei.litecache.sample"
         minSdkVersion app.minSdkVersion
         targetSdkVersion app.targetSdkVersion
         versionCode 1
