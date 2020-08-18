@@ -1,0 +1,3 @@
+include ':litecache'
+include ':app'
+rootProject.name = "LiteCache"
