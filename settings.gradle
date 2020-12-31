@@ -1,3 +1,2 @@
-include ':litecache'
-include ':app'
-rootProject.name = "LiteCache"
+include ':cache-x'
+include ':sample'

@@ -6,10 +6,7 @@ ext {
         handler.jcenter()
         handler.mavenCentral()
         handler.maven {
-            url 'https://dl.bintray.com/aqrlei/lib'
-        }
-        handler.maven {
-            url './repo'
+            url 'https://jitpack.io'
         }
     }
 
@@ -17,16 +14,6 @@ ext {
             compileSdkVersion : 30,
             minSdkVersion     : 21,
             targetSdkVersion  : 30,
-
-            versionCode       : 1000100,
-            versionName       : "1.0.1",
-            groupId           : "com.aqrlei.lib",
-            artifactId        : "litecache",
-            desc              : "A cache library of Android",
-            url               : "https://github.com/AqrLei/LiteCache",
-            vcsUrl            : "https://github.com/AqrLei/LiteCache.git",
-            connection        : "scm:git:git://github.com:AqrLei/LiteCache.git",
-            dveloperConnection: "scm:git:ssh://github.com:AqrLei/LiteCache.git",
     ]
 
     android = [
