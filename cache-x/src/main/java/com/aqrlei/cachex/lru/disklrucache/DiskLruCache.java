@@ -245,7 +245,7 @@ public final class DiskLruCache implements Closeable {
   }
 
   private void readJournal() throws IOException {
-    StrictLineReader reader = new StrictLineReader(new FileInputStream(journalFile), Util.US_ASCII);
+    StrictLineReader reader = new StrictLineReader(new FileInputStream(journalFile), 8192, Util.US_ASCII);
     try {
       String magic = reader.readLine();
       String version = reader.readLine();

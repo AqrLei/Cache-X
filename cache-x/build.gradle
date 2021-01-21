@@ -30,4 +30,4 @@ dependencies {
     implementation deps.android.appcompat
 }
 
-apply from: rootProject.file("gradle/bintray_upload.gradle")
+apply from: rootProject.file("gradle/maven_publish.gradle")
