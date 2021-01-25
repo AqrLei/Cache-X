@@ -1,7 +1,10 @@
 package com.aqrlei.cachex.lru.disklrucache
 
+import com.aqrlei.cachex.lru.disklrucache.Util.closeQuietly
 import java.io.*
+import java.util.*
 import java.util.regex.Pattern
+import kotlin.collections.LinkedHashMap
 
 /**
  * created by AqrLei on 1/21/21
@@ -98,6 +101,11 @@ class DiskLruCache private constructor(
                 throw  IOException()
             }
         }
+
+        @Throws(IOException::class)
+        private fun inputStreamToString(inputStream: InputStream): String {
+            return Util.readFully(InputStreamReader(inputStream, Util.UTF_8))
+        }
     }
 
     /*
@@ -144,19 +152,290 @@ class DiskLruCache private constructor(
     private val journalFileTmp = File(directory, JOURNAL_FILE_TEMP)
     private val journalFileBackup = File(directory, JOURNAL_FILE_BACKUP)
 
-    private lateinit var journalWriter: BufferedWriter
+    private  var journalWriter: BufferedWriter?= null
 
-    fun readJournal() {}
+    //TODO why
+    private val lruEntries = LinkedHashMap<String, Entry>(0, 0.75F, true)
 
+    @Throws(IOException::class)
+    private fun readJournal() {}
+
+    @Throws(IOException::class)
     fun processJournal() {}
 
+    @Throws(IOException::class)
     fun delete() {}
 
-    fun rebuildJournal(){
+    @Synchronized
+    @Throws(IOException::class)
+    private fun rebuildJournal(){
 
     }
+
+    @Throws(IOException::class)
+    @Synchronized
+    private fun completeEdit(editor: Editor, success: Boolean) {
+
+    }
+
+    @Throws(IOException::class)
+    @Synchronized
+    private fun remove(key: String) {
+
+    }
+
+    @Throws(IOException::class)
+    @Synchronized
+    private fun edit(key: String, expectedSequenceNumber: Long):Editor {
+        TODO()
+    }
+
 
     override fun close() {
-        TODO("Not yet implemented")
+        journalWriter?:return
+
     }
+
+    /** A snapshot of the values for an entry. */
+    inner class SnapShot(
+        private val key: String,
+        private val sequenceNumber: Long,
+        private val ins : Array<InputStream>,
+        private val lengths: LongArray
+    ): Closeable {
+
+        /**
+         * Returns an editor for this snapshot's entry, or null if either the
+         * entry has changed since this snapshot was created or if another edit
+         * is in progress.
+         */
+        @Throws(IOException::class)
+        fun edit(): Editor {
+            return this@DiskLruCache.edit(key, sequenceNumber)
+        }
+
+        /** Returns the unbuffered stream with the value for `index`.  */
+        fun getInputStream(index: Int): InputStream {
+            return ins[index]
+        }
+
+        /** Returns the string value for `index`.  */
+        @Throws(IOException::class)
+        fun getString(index: Int): String {
+            return inputStreamToString(getInputStream(index))
+        }
+
+        /** Returns the byte length of the value for `index`.  */
+        fun getLength(index: Int): Long {
+            return lengths[index]
+        }
+
+        override fun close() {
+            for (input in ins) {
+                closeQuietly(input)
+            }
+        }
+    }
+
+    inner class Entry(val key: String) {
+        /** Lengths of this entry's files.  */
+        private var lengths: LongArray = LongArray(valueCount)
+
+        /** True if this entry has ever been published.  */
+        var readable : Boolean = false
+
+        /** The ongoing edit or null if this entry is not being edited.  */
+        var currentEditor: Editor? = null
+
+        /** The sequence number of the most recently committed edit to this entry.  */
+        private var sequenceNumber: Long = 0
+
+        @Throws(IOException::class)
+        fun getLengths(): String {
+            val result = StringBuilder()
+            for (size in lengths) {
+                result.append(' ').append(size)
+            }
+            return result.toString()
+        }
+
+        /** Set lengths using decimal numbers like "10123".  */
+        @Throws(IOException::class)
+        private fun setLengths(strings: Array<String>) {
+            if (strings.size != valueCount) {
+                throw invalidLengths(strings)
+            }
+            try {
+                for (i in strings.indices) {
+                    lengths[i] = strings[i].toLong()
+                }
+            } catch (e: NumberFormatException) {
+                throw invalidLengths(strings)
+            }
+        }
+
+        @Throws(IOException::class)
+        private fun invalidLengths(strings: Array<String>): IOException {
+            throw IOException("unexpected journal line: " + strings.contentToString())
+        }
+
+        fun getCleanFile(i: Int): File {
+            return File(directory, "$key.$i")
+        }
+
+        fun getDirtyFile(i: Int): File {
+            return File(directory, "$key.$i.tmp")
+        }
+
+    }
+
+    /** Edits the values for an entry. */
+   inner class Editor(val entry: Entry) {
+
+        private val written: BooleanArray? = if (entry.readable) null else BooleanArray(valueCount)
+        private var hasErrors = false
+        private var committed = false
+
+
+        /**
+         * Returns an unbuffered input stream to read the last committed value,
+         * or null if no value has been committed.
+         */
+        @Throws(IOException::class)
+        fun newInputStream(index: Int): InputStream? {
+            synchronized(this@DiskLruCache) {
+                check(entry.currentEditor == this)
+                return if (!entry.readable) {
+                    null
+                } else try {
+                    FileInputStream(entry.getCleanFile(index))
+                } catch (e: FileNotFoundException) {
+                    null
+                }
+            }
+        }
+
+        /**
+         * Returns the last committed value as a string, or null if no value
+         * has been committed.
+         */
+        @Throws(IOException::class)
+        fun getString(index: Int): String? {
+            val inputStream = newInputStream(index)
+            return if (inputStream != null) inputStreamToString(inputStream) else null
+        }
+
+        /**
+         * Returns a new unbuffered output stream to write the value at
+         * `index`. If the underlying output stream encounters errors
+         * when writing to the filesystem, this edit will be aborted when
+         * [.commit] is called. The returned output stream does not throw
+         * IOExceptions.
+         */
+        @Throws(IOException::class)
+        fun newOutputStream(index: Int): OutputStream {
+            synchronized(this@DiskLruCache) {
+                check(entry.currentEditor == this)
+                if (!entry.readable) {
+                    written?.set(index, true)
+                }
+                val dirtyFile = entry.getDirtyFile(index)
+                val outputStream: FileOutputStream
+                outputStream = try {
+                    FileOutputStream(dirtyFile)
+                } catch (e: FileNotFoundException) {
+                    // Attempt to recreate the cache directory.
+                    directory.mkdirs()
+                    try {
+                        FileOutputStream(dirtyFile)
+                    } catch (e2: FileNotFoundException) {
+                        // We are unable to recover. Silently eat the writes.
+                        return NULL_OUTPUT_STREAM
+                    }
+                }
+                return FaultHidingOutputStream(outputStream)
+            }
+        }
+
+        /** Sets the value at `index` to `value`.  */
+        @Throws(IOException::class)
+        operator fun set(index: Int, value: String?) {
+            var writer: Writer? = null
+            try {
+                writer = OutputStreamWriter(newOutputStream(index), Util.UTF_8)
+                writer.write(value)
+            } finally {
+                closeQuietly(writer)
+            }
+        }
+
+        /**
+         * Commits this edit so it is visible to readers.  This releases the
+         * edit lock so another edit may be started on the same key.
+         */
+        @Throws(IOException::class)
+        fun commit() {
+            if (hasErrors) {
+                completeEdit(this, false)
+                remove(entry.key) // The previous entry is stale.
+            } else {
+                completeEdit(this, true)
+            }
+            committed = true
+        }
+
+        /**
+         * Aborts this edit. This releases the edit lock so another edit may be
+         * started on the same key.
+         */
+        @Throws(IOException::class)
+        fun abort() {
+            completeEdit(this, false)
+        }
+
+        fun abortUnlessCommitted() {
+            if (!committed) {
+                try {
+                    abort()
+                } catch (ignored: IOException) {
+                }
+            }
+        }
+
+        private inner class FaultHidingOutputStream constructor(out: OutputStream) :
+            FilterOutputStream(out) {
+            override fun write(oneByte: Int) {
+                try {
+                    out.write(oneByte)
+                } catch (e: IOException) {
+                    hasErrors = true
+                }
+            }
+
+            override fun write(buffer: ByteArray, offset: Int, length: Int) {
+                try {
+                    out.write(buffer, offset, length)
+                } catch (e: IOException) {
+                    hasErrors = true
+                }
+            }
+
+            override fun close() {
+                try {
+                    out.close()
+                } catch (e: IOException) {
+                    hasErrors = true
+                }
+            }
+
+            override fun flush() {
+                try {
+                    out.flush()
+                } catch (e: IOException) {
+                    hasErrors = true
+                }
+            }
+        }
+    }
+
 }
