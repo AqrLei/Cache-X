@@ -1,19 +1,25 @@
 package com.aqrlei.cachex.lru.disklrucache
 
-import com.aqrlei.cachex.lru.disklrucache.Util.closeQuietly
 import java.io.*
-import java.util.*
+import java.util.concurrent.Callable
+import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
-import kotlin.collections.LinkedHashMap
 
 /**
  * created by AqrLei on 1/21/21
+ * synchronized
+ * LinkedHashMap
+ * BufferWriter(I/O)
+ * ThreadPoolExecutor , LinkedBlockingQueue
+ *
  */
 class DiskLruCache private constructor(
     private val directory: File,
     private val appVersion: Int,
     private val valueCount: Int,
-    private val maxSize: Long
+    private var maxSize: Long
 ) : Closeable {
     companion object {
         const val JOURNAL_FILE = "journal"
@@ -28,7 +34,7 @@ class DiskLruCache private constructor(
         private const val REMOVE = "REMOVE"
         private const val READ = "READ"
 
-        private val NULL_OUTPUT_STREAM = object: OutputStream() {
+        private val NULL_OUTPUT_STREAM = object : OutputStream() {
             override fun write(b: Int) {
                 // Eat all writes silently. Nom nom.
             }
@@ -152,57 +158,422 @@ class DiskLruCache private constructor(
     private val journalFileTmp = File(directory, JOURNAL_FILE_TEMP)
     private val journalFileBackup = File(directory, JOURNAL_FILE_BACKUP)
 
-    private  var journalWriter: BufferedWriter?= null
+    private var journalWriter: BufferedWriter? = null
 
-    //TODO why
     private val lruEntries = LinkedHashMap<String, Entry>(0, 0.75F, true)
+    private var redundantOpCount: Int = 0
+    private var size: Long = 0
+
+
+    /**
+     * To differentiate between old and current snapshots, each entry is given
+     * a sequence number each time an edit is committed. A snapshot is stale if
+     * its sequence number is not equal to its entry's sequence number.
+     */
+    private var nextSequenceNumber = 0L
+
+    /** This cache uses a single background thread to evict entries. */
+    private val executorService =
+        ThreadPoolExecutor(0, 1, 60L, TimeUnit.SECONDS, LinkedBlockingDeque<Runnable>())
+
+    private val cleanupCallable = Callable<Void?> {
+        synchronized(this@DiskLruCache) {
+            if (journalWriter == null) {
+                return@Callable null // Closed.
+            }
+            trimToSize()
+            if (journalRebuildRequired()) {
+                rebuildJournal()
+                redundantOpCount = 0
+            }
+        }
+        null
+    }
+
 
     @Throws(IOException::class)
-    private fun readJournal() {}
+    private fun readJournal() {
+        val reader = StrictLineReader(FileInputStream(journalFile), 8192, Util.US_ASCII)
+        try {
+            val magic = reader.readLine()
+            val version = reader.readLine()
+            val appVersionString = reader.readLine()
+            val valueCountString = reader.readLine()
+            val blank = reader.readLine()
+            if (MAGIC != magic
+                || VERSION_1 != version
+                || appVersion.toString() != appVersionString
+                || valueCount.toString() != valueCountString
+                || "" != blank
+            ) {
+                throw  IOException(
+                    "unexpected journal header: [" + magic + ", " + version + ", "
+                            + valueCountString + ", " + blank + "]"
+                )
+            }
+            var lineCount = 0
+            while (true) {
+                try {
+                    readJournalLine(reader.readLine())
+                    lineCount++
+                } catch (endOfJournal: EOFException) {
+                    break
+                }
+            }
+            redundantOpCount = lineCount - lruEntries.size
+        } finally {
+            Util.closeQuietly(reader)
+        }
+    }
 
     @Throws(IOException::class)
-    fun processJournal() {}
+    private fun readJournalLine(line: String) {
+        val firstSpace: Int = line.indexOf(' ')
+        firstSpace.takeIf { it == -1 }?.run {
+            throw IOException("unexpected journal line: $line")
+        }
 
-    @Throws(IOException::class)
-    fun delete() {}
+        val keyBegin = firstSpace + 1
+        val secondSpace = line.indexOf(' ', keyBegin)
+        val key: String
+        if (secondSpace == -1) {
+            key = line.substring(keyBegin)
+            if (firstSpace == REMOVE.length && line.startsWith(REMOVE)) {
+                lruEntries.remove(key)
+                return
+            }
+        } else {
+            key = line.substring(keyBegin, secondSpace)
+        }
 
-    @Synchronized
-    @Throws(IOException::class)
-    private fun rebuildJournal(){
+        var entry = lruEntries[key]
+        if (entry == null) {
+            entry = Entry(key)
+            lruEntries[key] = entry
+        }
+
+        when {
+            secondSpace != -1 && firstSpace == CLEAN.length && line.startsWith(CLEAN) -> {
+                val parts = line.substring(secondSpace + 1).split(" ").toTypedArray()
+                entry.readable = true
+                entry.currentEditor = null
+                entry.setLengths(parts)
+            }
+            secondSpace == -1 && firstSpace == DIRTY.length && line.startsWith(DIRTY) -> {
+                entry.currentEditor = Editor(entry)
+            }
+            secondSpace == -1 && firstSpace == READ.length && line.startsWith(READ) -> {
+                // This work was already done by calling lruEntries.get().
+            }
+            else -> {
+                throw IOException("unexpected journal line: $line")
+            }
+        }
 
     }
+
+    /**
+     * Computes the initial size and collects garbage as a part of opening the
+     * cache. Dirty entries are assumed to be inconsistent and will be deleted.
+     */
+    @Throws(IOException::class)
+    fun processJournal() {
+        deleteIfExists(journalFileTmp)
+        val i = lruEntries.values.iterator()
+        while (i.hasNext()) {
+            val entry = i.next()
+            if (entry.currentEditor == null) {
+                for (t in 0 until valueCount) {
+                    size += entry.lengths[t]
+                }
+            } else {
+                entry.currentEditor = null
+                for (t in 0 until valueCount) {
+                    deleteIfExists(entry.getCleanFile(t))
+                    deleteIfExists(entry.getDirtyFile(t))
+                }
+                i.remove()
+            }
+        }
+    }
+
+    /**
+     * Creates a new journal that omits redundant information. This replaces the
+     * current journal if it exists.
+     */
+    @Synchronized
+    @Throws(IOException::class)
+    private fun rebuildJournal() {
+        journalWriter?.close()
+        val writer =
+            BufferedWriter(OutputStreamWriter(FileOutputStream(journalFile), Util.US_ASCII))
+        writer.use {
+            writer.write(MAGIC)
+            writer.write("\n")
+            writer.write(VERSION_1)
+            writer.write("\n")
+            writer.write(appVersion.toString())
+            writer.write("\n")
+            writer.write(valueCount.toString())
+            writer.write("\n")
+            writer.write("\n")
+            for (entry in lruEntries.values) {
+                if (entry.currentEditor != null) {
+                    writer.write("$DIRTY ${entry.key}\n")
+                } else {
+                    writer.write("$CLEAN ${entry.key}${entry.getLengths()}\n")
+                }
+            }
+        }
+    }
+
+    /**
+     * Returns a snapshot of the entry named {@code key}, or null if it doesn't
+     * exist is not currently readable. If a value is returned, it is moved to
+     * the head of the LRU queue.
+     */
+    @Throws(IOException::class)
+    @Synchronized
+    fun get(key: String) : SnapShot? {
+        checkNotClosed()
+        validateKey(key)
+        val entry = lruEntries[key] ?: return null
+
+        if (!entry.readable) {
+            return null
+        }
+        val ins = arrayListOf<InputStream>()
+
+        try{
+            for (i in 0 until valueCount){
+                ins[i] = FileInputStream(entry.getCleanFile(i))
+            }
+        }catch (e: FileNotFoundException){
+            for(i in 0 until valueCount) {
+                ins.getOrNull(i)?.let {
+                    Util.closeQuietly(it)
+                }
+            }
+          return  null
+        }
+
+        redundantOpCount++
+        journalWriter?.append("$READ $key\n")
+
+        if (journalRebuildRequired()){
+            executorService.submit(cleanupCallable)
+        }
+
+        return SnapShot(key, entry.sequenceNumber, ins.toTypedArray(), entry.lengths)
+    }
+
+    /**
+     * Returns an editor for the entry named {@code key}, or null if another
+     * edit is in progress.
+     */
+    fun edit(key: String): Editor? = edit(key, ANY_SEQUENCE_NUMBER)
+
+    @Throws(IOException::class)
+    @Synchronized
+    private fun edit(key: String, expectedSequenceNumber: Long): Editor? {
+        checkNotClosed()
+        validateKey(key)
+        var entry = lruEntries[key]
+        if (expectedSequenceNumber != ANY_SEQUENCE_NUMBER
+            && (entry != null || entry?.sequenceNumber != expectedSequenceNumber)){
+            return null
+        }
+        if (entry == null){
+            entry = Entry(key)
+            lruEntries.put(key, entry)
+        }else if (entry.currentEditor != null){
+            return null
+        }
+        val editor = Editor(entry)
+        entry.currentEditor = editor
+        journalWriter?.write("$DIRTY $key\n")
+        journalWriter?.flush()
+        return editor
+    }
+
+    /** Returns the directory where this cache stores its data. */
+    fun getDirectory() = directory
+
+    /**
+     * Returns the maximum number of bytes that this cache should use to store
+     * its data.
+     */
+    @Synchronized
+    fun getMaxSize(): Long = maxSize
+
+
+    /**
+     * Changes the maximum number of bytes the cache can store and queues a job
+     * to trim the existing store, if necessary.
+     */
+    @Synchronized
+    fun setMaxSize(maxSize: Long)  {
+        this.maxSize = maxSize
+        executorService.submit(cleanupCallable)
+    }
+
+    @Synchronized
+    fun size(): Long = size
 
     @Throws(IOException::class)
     @Synchronized
     private fun completeEdit(editor: Editor, success: Boolean) {
+        val entry = editor.entry
+        check(entry.currentEditor == editor)
 
+        // If this edit is creating the entry for the first time, every index must have a value.
+        if (success && !entry.readable) {
+            for (i in 0 until  valueCount) {
+                if(editor.written?.getOrNull(i) != true) {
+                    editor.abort()
+                    throw IllegalStateException("Newly created entry didn't create value for index $i")
+                }
+                if (!entry.getDirtyFile(i).exists()){
+                    editor.abort()
+                    return
+                }
+            }
+        }
+
+        for(i in 0 until valueCount) {
+            val dirty = entry.getDirtyFile(i)
+            if (success){
+                if (dirty.exists()) {
+                    val clean = entry.getCleanFile(i)
+                    dirty.renameTo(clean)
+                    val oldLength = entry.lengths[i]
+                    val newLength = clean.length()
+                    entry.lengths[i] = newLength
+                    size = size - oldLength + newLength
+                }
+            }else {
+                deleteIfExists(dirty)
+            }
+        }
+
+        redundantOpCount ++
+        entry.currentEditor = null
+        if (entry.readable or success) {
+            entry.readable = true
+            journalWriter?.write("$CLEAN ${entry.key}${entry.getLengths()}\n")
+            if (success) {
+                entry.sequenceNumber = nextSequenceNumber++
+            }
+        }else {
+            lruEntries.remove(entry.key)
+            journalWriter?.write("$REMOVE ${entry.key}\n")
+        }
+
+        journalWriter?.flush()
+
+        if (size > maxSize || journalRebuildRequired()) {
+            executorService.submit(cleanupCallable)
+        }
+    }
+
+
+    /**
+     * We only rebuild the journal when it will halve the size of the journal
+     * and eliminate at least 2000 ops.
+     */
+    private fun journalRebuildRequired(): Boolean {
+        val redundantOpCompactThreshold = 2000
+        return redundantOpCount >= redundantOpCompactThreshold
+                && redundantOpCount >= lruEntries.size
+    }
+
+    /**
+     * Drops the entry for {@code key} if it exists and can be removed. Entries
+     * actively being edited cannot be removed.
+     *
+     * @return true if an entry was removed.
+     */
+    @Throws(IOException::class)
+    @Synchronized
+    private fun remove(key: String): Boolean {
+        checkNotClosed()
+        validateKey(key)
+        var entry = lruEntries[key]
+        if (entry == null || entry.currentEditor != null){
+            return false
+        }
+        for (i in 0 until valueCount){
+            val file = entry.getCleanFile(i)
+            if (file.exists() && !file.delete()){
+                throw IOException("failed to delete $file")
+            }
+            size -= entry.lengths[i]
+            entry.lengths[i] = 0
+        }
+
+        redundantOpCount++
+        journalWriter?.append("$REMOVE $key\n")
+        lruEntries.remove(key)
+        if (journalRebuildRequired()) {
+            executorService.submit(cleanupCallable)
+        }
+        return true
+    }
+
+    @Synchronized
+    fun isClosed() = journalWriter == null
+
+    private fun checkNotClosed() {
+        check(journalWriter != null){"cache is closed"}
     }
 
     @Throws(IOException::class)
     @Synchronized
-    private fun remove(key: String) {
-
+    fun flush(){
+        checkNotClosed()
+        trimToSize()
+        journalWriter?.flush()
     }
+
 
     @Throws(IOException::class)
     @Synchronized
-    private fun edit(key: String, expectedSequenceNumber: Long):Editor {
-        TODO()
-    }
-
-
     override fun close() {
-        journalWriter?:return
+        journalWriter ?: return
+        for (entry in lruEntries.values) {
+            entry.currentEditor?.abort()
+        }
+        trimToSize()
+        journalWriter?.close()
+        journalWriter = null
+    }
 
+    @Throws(IOException::class)
+    private fun trimToSize() {
+        while (size > maxSize) {
+            val toEvict = lruEntries.entries.iterator().next()
+            remove(toEvict.key)
+        }
+    }
+
+    @Throws(IOException::class)
+    fun delete() {
+        close()
+        Util.deleteContents(directory)
+    }
+
+    private fun validateKey(key: String){
+        val matcher = LEGAL_KEY_PATTERN.matcher(key)
+        require(matcher.matches()){ "keys must match regex [a-z0-9_-]{1,64}: \"$key\"" }
     }
 
     /** A snapshot of the values for an entry. */
     inner class SnapShot(
         private val key: String,
-        private val sequenceNumber: Long,
-        private val ins : Array<InputStream>,
+        val sequenceNumber: Long,
+        private val ins: Array<InputStream>,
         private val lengths: LongArray
-    ): Closeable {
+    ) : Closeable {
 
         /**
          * Returns an editor for this snapshot's entry, or null if either the
@@ -210,7 +581,7 @@ class DiskLruCache private constructor(
          * is in progress.
          */
         @Throws(IOException::class)
-        fun edit(): Editor {
+        fun edit(): Editor? {
             return this@DiskLruCache.edit(key, sequenceNumber)
         }
 
@@ -232,23 +603,23 @@ class DiskLruCache private constructor(
 
         override fun close() {
             for (input in ins) {
-                closeQuietly(input)
+                Util.closeQuietly(input)
             }
         }
     }
 
     inner class Entry(val key: String) {
         /** Lengths of this entry's files.  */
-        private var lengths: LongArray = LongArray(valueCount)
+        internal val lengths: LongArray = LongArray(valueCount)
 
         /** True if this entry has ever been published.  */
-        var readable : Boolean = false
+        internal var readable: Boolean = false
 
         /** The ongoing edit or null if this entry is not being edited.  */
-        var currentEditor: Editor? = null
+        internal var currentEditor: Editor? = null
 
         /** The sequence number of the most recently committed edit to this entry.  */
-        private var sequenceNumber: Long = 0
+        internal var sequenceNumber: Long = 0
 
         @Throws(IOException::class)
         fun getLengths(): String {
@@ -261,7 +632,7 @@ class DiskLruCache private constructor(
 
         /** Set lengths using decimal numbers like "10123".  */
         @Throws(IOException::class)
-        private fun setLengths(strings: Array<String>) {
+        fun setLengths(strings: Array<String>) {
             if (strings.size != valueCount) {
                 throw invalidLengths(strings)
             }
@@ -290,11 +661,11 @@ class DiskLruCache private constructor(
     }
 
     /** Edits the values for an entry. */
-   inner class Editor(val entry: Entry) {
+    inner class Editor(val entry: Entry) {
 
-        private val written: BooleanArray? = if (entry.readable) null else BooleanArray(valueCount)
-        private var hasErrors = false
-        private var committed = false
+        internal val written: BooleanArray? = if (entry.readable) null else BooleanArray(valueCount)
+        internal var hasErrors = false
+        internal var committed = false
 
 
         /**
@@ -365,7 +736,7 @@ class DiskLruCache private constructor(
                 writer = OutputStreamWriter(newOutputStream(index), Util.UTF_8)
                 writer.write(value)
             } finally {
-                closeQuietly(writer)
+                Util.closeQuietly(writer)
             }
         }
 
