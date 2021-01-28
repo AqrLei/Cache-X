@@ -4,6 +4,7 @@
  ** LinkedHashMap 
  * ThreadPoolExecutor , LinkedBlockingQueue, Callable
  ** synchronized
+ ** gc jvm 虚拟机
  
  1. DiskLruCache
  

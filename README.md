@@ -6,4 +6,5 @@
 1. DiskLruCache/ LruCache
 [LruCache](./doc/lrucache.md)
 
-2. WeakReference 
+2. Reference 
+[Reference](./doc/reference.md)

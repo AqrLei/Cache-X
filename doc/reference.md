@@ -1,0 +1,1 @@
+ * StrongReference SoftReference WeakReference PhantomReference
