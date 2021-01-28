@@ -8,6 +8,51 @@ import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 
 /**
+ * A cache that uses a bounded amount of space on a filesystem. Each cache
+ * entry has a string key and a fixed number of values. Each key must match
+ * the regex <strong>[a-z0-9_-]{1,64}</strong>. Values are byte sequences,
+ * accessible as streams or files. Each value must be between {@code 0} and
+ * {@code Integer.MAX_VALUE} bytes in length.
+ *
+ * <p>The cache stores its data in a directory on the filesystem. This
+ * directory must be exclusive to the cache; the cache may delete or overwrite
+ * files from its directory. It is an error for multiple processes to use the
+ * same cache directory at the same time.
+ *
+ * <p>This cache limits the number of bytes that it will store on the
+ * filesystem. When the number of stored bytes exceeds the limit, the cache will
+ * remove entries in the background until the limit is satisfied. The limit is
+ * not strict: the cache may temporarily exceed it while waiting for files to be
+ * deleted. The limit does not include filesystem overhead or the cache
+ * journal so space-sensitive applications should set a conservative limit.
+ *
+ * <p>Clients call {@link #edit} to create or update the values of an entry. An
+ * entry may have only one editor at one time; if a value is not available to be
+ * edited then {@link #edit} will return null.
+ * <ul>
+ * <li>When an entry is being <strong>created</strong> it is necessary to
+ * supply a full set of values; the empty value should be used as a
+ * placeholder if necessary.
+ * <li>When an entry is being <strong>edited</strong>, it is not necessary
+ * to supply data for every value; values default to their previous
+ * value.
+ * </ul>
+ * Every {@link #edit} call must be matched by a call to {@link Editor#commit}
+ * or {@link Editor#abort}. Committing is atomic: a read observes the full set
+ * of values as they were before or after the commit, but never a mix of values.
+ *
+ * <p>Clients call {@link #get} to read a snapshot of an entry. The read will
+ * observe the value at the time that {@link #get} was called. Updates and
+ * removals after the call do not impact ongoing reads.
+ *
+ * <p>This class is tolerant of some I/O errors. If files are missing from the
+ * filesystem, the corresponding entries will be dropped from the cache. If
+ * an error occurs while writing a cache value, the edit will fail silently.
+ * Callers should handle other problems by catching {@code IOException} and
+ * responding appropriately.
+ */
+
+/**
  * created by AqrLei on 1/21/21
  * synchronized
  * LinkedHashMap
@@ -325,6 +370,14 @@ class DiskLruCache private constructor(
                 }
             }
         }
+
+        if (journalFile.exists()) {
+            renameTo(journalFile, journalFileBackup, true)
+        }
+        renameTo(journalFileTmp, journalFile, false)
+        journalFileBackup.delete()
+        journalWriter =
+            BufferedWriter(OutputStreamWriter(FileOutputStream(journalFile, true), Util.US_ASCII))
     }
 
     /**
@@ -334,33 +387,30 @@ class DiskLruCache private constructor(
      */
     @Throws(IOException::class)
     @Synchronized
-    fun get(key: String) : SnapShot? {
+    fun get(key: String): SnapShot? {
         checkNotClosed()
         validateKey(key)
-        val entry = lruEntries[key] ?: return null
+        val entry = lruEntries[key]?.takeIf { it.readable } ?: return null
 
-        if (!entry.readable) {
-            return null
-        }
         val ins = arrayListOf<InputStream>()
 
-        try{
-            for (i in 0 until valueCount){
+        try {
+            for (i in 0 until valueCount) {
                 ins[i] = FileInputStream(entry.getCleanFile(i))
             }
-        }catch (e: FileNotFoundException){
-            for(i in 0 until valueCount) {
+        } catch (e: FileNotFoundException) {
+            for (i in 0 until valueCount) {
                 ins.getOrNull(i)?.let {
                     Util.closeQuietly(it)
-                }
+                } ?: break
             }
-          return  null
+            return null
         }
 
         redundantOpCount++
         journalWriter?.append("$READ $key\n")
 
-        if (journalRebuildRequired()){
+        if (journalRebuildRequired()) {
             executorService.submit(cleanupCallable)
         }
 
@@ -371,6 +421,7 @@ class DiskLruCache private constructor(
      * Returns an editor for the entry named {@code key}, or null if another
      * edit is in progress.
      */
+    @Throws(IOException::class)
     fun edit(key: String): Editor? = edit(key, ANY_SEQUENCE_NUMBER)
 
     @Throws(IOException::class)
@@ -380,13 +431,14 @@ class DiskLruCache private constructor(
         validateKey(key)
         var entry = lruEntries[key]
         if (expectedSequenceNumber != ANY_SEQUENCE_NUMBER
-            && (entry != null || entry?.sequenceNumber != expectedSequenceNumber)){
-            return null
+            && (entry == null || entry.sequenceNumber != expectedSequenceNumber)
+        ) {
+            return null // Snapshot is stale.
         }
-        if (entry == null){
+        if (entry == null) {
             entry = Entry(key)
-            lruEntries.put(key, entry)
-        }else if (entry.currentEditor != null){
+            lruEntries[key] = entry
+        } else if (entry.currentEditor != null) {
             return null
         }
         val editor = Editor(entry)
@@ -406,13 +458,12 @@ class DiskLruCache private constructor(
     @Synchronized
     fun getMaxSize(): Long = maxSize
 
-
     /**
      * Changes the maximum number of bytes the cache can store and queues a job
      * to trim the existing store, if necessary.
      */
     @Synchronized
-    fun setMaxSize(maxSize: Long)  {
+    fun setMaxSize(maxSize: Long) {
         this.maxSize = maxSize
         executorService.submit(cleanupCallable)
     }
@@ -428,21 +479,21 @@ class DiskLruCache private constructor(
 
         // If this edit is creating the entry for the first time, every index must have a value.
         if (success && !entry.readable) {
-            for (i in 0 until  valueCount) {
-                if(editor.written?.getOrNull(i) != true) {
+            for (i in 0 until valueCount) {
+                if (editor.written?.getOrNull(i) != true) {
                     editor.abort()
                     throw IllegalStateException("Newly created entry didn't create value for index $i")
                 }
-                if (!entry.getDirtyFile(i).exists()){
+                if (!entry.getDirtyFile(i).exists()) {
                     editor.abort()
                     return
                 }
             }
         }
 
-        for(i in 0 until valueCount) {
+        for (i in 0 until valueCount) {
             val dirty = entry.getDirtyFile(i)
-            if (success){
+            if (success) {
                 if (dirty.exists()) {
                     val clean = entry.getCleanFile(i)
                     dirty.renameTo(clean)
@@ -451,12 +502,12 @@ class DiskLruCache private constructor(
                     entry.lengths[i] = newLength
                     size = size - oldLength + newLength
                 }
-            }else {
+            } else {
                 deleteIfExists(dirty)
             }
         }
 
-        redundantOpCount ++
+        redundantOpCount++
         entry.currentEditor = null
         if (entry.readable or success) {
             entry.readable = true
@@ -464,7 +515,7 @@ class DiskLruCache private constructor(
             if (success) {
                 entry.sequenceNumber = nextSequenceNumber++
             }
-        }else {
+        } else {
             lruEntries.remove(entry.key)
             journalWriter?.write("$REMOVE ${entry.key}\n")
         }
@@ -498,13 +549,13 @@ class DiskLruCache private constructor(
     private fun remove(key: String): Boolean {
         checkNotClosed()
         validateKey(key)
-        var entry = lruEntries[key]
-        if (entry == null || entry.currentEditor != null){
+        val entry = lruEntries[key]
+        if (entry == null || entry.currentEditor != null) {
             return false
         }
-        for (i in 0 until valueCount){
+        for (i in 0 until valueCount) {
             val file = entry.getCleanFile(i)
-            if (file.exists() && !file.delete()){
+            if (file.exists() && !file.delete()) {
                 throw IOException("failed to delete $file")
             }
             size -= entry.lengths[i]
@@ -524,12 +575,12 @@ class DiskLruCache private constructor(
     fun isClosed() = journalWriter == null
 
     private fun checkNotClosed() {
-        check(journalWriter != null){"cache is closed"}
+        check(journalWriter != null) { "cache is closed" }
     }
 
     @Throws(IOException::class)
     @Synchronized
-    fun flush(){
+    fun flush() {
         checkNotClosed()
         trimToSize()
         journalWriter?.flush()
@@ -556,21 +607,27 @@ class DiskLruCache private constructor(
         }
     }
 
+
+    /**
+     * Closes the cache and deletes all of its stored values. This will delete
+     * all files in the cache directory including files that weren't created by
+     * the cache.
+     */
     @Throws(IOException::class)
     fun delete() {
         close()
         Util.deleteContents(directory)
     }
 
-    private fun validateKey(key: String){
+    private fun validateKey(key: String) {
         val matcher = LEGAL_KEY_PATTERN.matcher(key)
-        require(matcher.matches()){ "keys must match regex [a-z0-9_-]{1,64}: \"$key\"" }
+        require(matcher.matches()) { "keys must match regex [a-z0-9_-]{1,64}: \"$key\"" }
     }
 
     /** A snapshot of the values for an entry. */
     inner class SnapShot(
         private val key: String,
-        val sequenceNumber: Long,
+        private val sequenceNumber: Long,
         private val ins: Array<InputStream>,
         private val lengths: LongArray
     ) : Closeable {
@@ -730,7 +787,7 @@ class DiskLruCache private constructor(
 
         /** Sets the value at `index` to `value`.  */
         @Throws(IOException::class)
-        operator fun set(index: Int, value: String?) {
+        fun set(index: Int, value: String?) {
             var writer: Writer? = null
             try {
                 writer = OutputStreamWriter(newOutputStream(index), Util.UTF_8)
@@ -808,5 +865,4 @@ class DiskLruCache private constructor(
             }
         }
     }
-
 }

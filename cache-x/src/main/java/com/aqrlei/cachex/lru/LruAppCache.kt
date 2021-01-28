@@ -196,7 +196,7 @@ class LruAppCache private constructor(
     private fun getDiskLruCache(context: Context): DiskLruCache {
         cacheDir = getAppCacheDirFile(context, lruCacheConfig.diskCacheFileName)
         return DiskLruCache.open(
-            cacheDir, getAppVersion(context), 1,
+            cacheDir!!, getAppVersion(context), 1,
             lruCacheConfig.diskCacheSize
         )
     }
