@@ -4,5 +4,7 @@
 [Glide 缓存机制解析(为啥使用弱引用)](https://blog.csdn.net/u011418943/article/details/107026881)
 
 1. DiskLruCache
+[DiskLruCache原理](./doc/disklrucache.md)
+
 2. LruCache
 3. WeakRefren

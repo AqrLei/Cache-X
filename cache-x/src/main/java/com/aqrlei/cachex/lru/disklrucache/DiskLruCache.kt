@@ -1,10 +1,7 @@
 package com.aqrlei.cachex.lru.disklrucache
 
 import java.io.*
-import java.util.concurrent.Callable
-import java.util.concurrent.LinkedBlockingDeque
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.*
 import java.util.regex.Pattern
 
 /**
@@ -54,10 +51,12 @@ import java.util.regex.Pattern
 
 /**
  * created by AqrLei on 1/21/21
- * synchronized
+ * Closeable
+ * (I/O) OutputStream, InputStream, File, BufferedWriter, OutputStreamWriter, FileOutputStream, FileInputStream, FilterOutputStream
  * LinkedHashMap
- * BufferWriter(I/O)
- * ThreadPoolExecutor , LinkedBlockingQueue
+ * ThreadPoolExecutor , LinkedBlockingQueue, Callable
+ * synchronized
+ * [StrictLineReader]
  *
  */
 class DiskLruCache private constructor(
@@ -219,7 +218,7 @@ class DiskLruCache private constructor(
 
     /** This cache uses a single background thread to evict entries. */
     private val executorService =
-        ThreadPoolExecutor(0, 1, 60L, TimeUnit.SECONDS, LinkedBlockingDeque<Runnable>())
+        ThreadPoolExecutor(0, 1, 60L, TimeUnit.SECONDS, LinkedBlockingQueue<Runnable>())
 
     private val cleanupCallable = Callable<Void?> {
         synchronized(this@DiskLruCache) {
