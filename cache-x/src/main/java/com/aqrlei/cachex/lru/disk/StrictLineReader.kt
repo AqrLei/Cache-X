@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.aqrlei.cachex.lru.disklrucache
+package com.aqrlei.cachex.lru.disk
 
 import java.io.*
 import java.nio.charset.Charset

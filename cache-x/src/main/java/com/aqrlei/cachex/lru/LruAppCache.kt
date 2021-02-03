@@ -1,14 +1,11 @@
 package com.aqrlei.cachex.lru
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.util.LruCache
-import com.aqrlei.cachex.lru.disklrucache.DiskLruCache
+import com.aqrlei.cachex.lru.disk.DiskLruCache
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.IOException
-import java.lang.ref.PhantomReference
-import java.lang.ref.SoftReference
 import java.lang.ref.WeakReference
 import java.util.*
 
