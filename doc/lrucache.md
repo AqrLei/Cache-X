@@ -6,7 +6,13 @@
  ** synchronized
  ** gc jvm 虚拟机
  
- 1. DiskLruCache
+ DiskLruCache
+ -----
  
- 2. LruCache
+ 1. LinkedHashMap  *哈希算法，链表，红黑树*
+ 
+ 2. 
+ 
+ LruCache
+ -----
  
