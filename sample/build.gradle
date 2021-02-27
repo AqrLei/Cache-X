@@ -29,8 +29,6 @@ dependencies {
     implementation deps.android.ktx
     implementation deps.android.appcompat
     implementation deps.android.constraintlayout
-    testImplementation deps.junit
-    androidTestImplementation deps.android.junit_ext
-    androidTestImplementation deps.android.espresso
+    implementation deps.glide
 
 }

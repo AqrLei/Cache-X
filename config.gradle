@@ -26,28 +26,14 @@ ext {
             viewpager2      : "androidx.viewpager2:viewpager2:1.0.0"
     ]
 
-    aqrlei = [
-            litelog         : "com.aqrlei.lib:litelog:1.0.1",
-            litecache       : "com.aqrlei.lib:litecache:1.0.0",
-            litedraw        : "com.aqrlei.lib:litedraw:1.0.0",
-            litenet         : "com.aqrlei.lib:litenet:1.0.0",
-            bannerview      : "com.aqrlei.lib:bannerview:1.0.0",
-            utilcollection  : "com.aqrlei.lib:utilcollection:1.0.0",
-            widgetcollection: "com.aqrlei.lib:widgetcollection:1.0.0",
-    ]
-
-    bintray = [
-            plugin: "com.jfrog.bintray.gradle:gradle-bintray-plugin:1.8.5",
-    ]
-
     junit = "junit:junit:4.12"
 
 
     kotlin = [
             dokka_plugin: "org.jetbrains.dokka:dokka-gradle-plugin:0.10.1",
-            plugin      : "org.jetbrains.kotlin:kotlin-gradle-plugin:1.4.0",
-            stdlib      : "org.jetbrains.kotlin:kotlin-stdlib:1.4.0",
-            coroutine   : "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.3.9"
+            plugin      : "org.jetbrains.kotlin:kotlin-gradle-plugin:1.4.31",
+            stdlib      : "org.jetbrains.kotlin:kotlin-stdlib:1.4.31",
+            coroutine   : "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.4.2"
     ]
 
     okhttp = [
@@ -66,12 +52,12 @@ ext {
 
     deps = [
             android: android,
-            aqrlei : aqrlei,
             gson   : "com.google.code.gson:gson:2.8.6",
             junit  : junit,
             kotlin : kotlin,
             okhttp : okhttp,
             moshi  : moshi,
+            glide  : "com.github.bumptech.glid:glide:4.12.0",
             zxing  : "com.google.zxing:core:3.4.0",
     ]
 }

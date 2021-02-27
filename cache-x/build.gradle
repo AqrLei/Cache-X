@@ -28,6 +28,7 @@ dependencies {
     implementation deps.kotlin.stdlib
     implementation deps.kotlin.coroutine
     implementation deps.android.appcompat
+
 }
 
 apply from: rootProject.file("gradle/maven_publish.gradle")
