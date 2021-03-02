@@ -89,6 +89,6 @@ internal class CoroutineCacheJob(
     }
 
     override fun setBackgroundBlock(block: () -> Unit) {
-        backgroundBlock?.invoke()
+        backgroundBlock = block
     }
 }

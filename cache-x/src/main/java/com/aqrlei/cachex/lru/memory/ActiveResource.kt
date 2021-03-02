@@ -3,7 +3,6 @@ package com.aqrlei.cachex.lru.memory
 import com.aqrlei.cachex.CacheModel
 import com.aqrlei.cachex.Key
 import com.aqrlei.cachex.activeResourceJob
-import kotlinx.coroutines.CancellationException
 import java.lang.ref.ReferenceQueue
 
 /**
@@ -29,12 +28,8 @@ class ActiveResource private constructor() : CacheModel() {
 
     private fun cleanReferenceQueue() {
         while (!isClear) {
-            try {
-                val ref = resourceReferenceQueue.remove() as? ByteResourceWeakReference
-                ref?.let { cleanupActiveReference(it) }
-            } catch (e: CancellationException) {
-
-            }
+            val ref = resourceReferenceQueue.remove() as? ByteResourceWeakReference
+            ref?.let { cleanupActiveReference(it) }
         }
     }
 
