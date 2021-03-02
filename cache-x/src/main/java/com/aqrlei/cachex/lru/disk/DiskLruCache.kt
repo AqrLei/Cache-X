@@ -544,7 +544,7 @@ class DiskLruCache private constructor(
      */
     @Throws(IOException::class)
     @Synchronized
-    private fun remove(key: String): Boolean {
+    fun remove(key: String): Boolean {
         checkNotClosed()
         validateKey(key)
         val entry = lruEntries[key]
