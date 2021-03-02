@@ -5,6 +5,7 @@ import com.aqrlei.cachex.lru.memory.ActiveResource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
@@ -19,9 +20,12 @@ import kotlin.coroutines.CoroutineContext
  * created by AqrLei on 3/1/21
  */
 
-private const val SCOPE_KEY = "com.aqrlei.cachex.CacheModel.JOB_KEY"
-private const val CACHE_JOB_KEY = "com.aqrlei.cachex.CacheModel.CACHE_JOB_KEY"
-private const val ACTIVE_RESOURCE_SCOPE_KEY = "com.aqrlei.cachex.lru.memory.ActiveResource.JOB_KEY"
+private const val SCOPE_KEY = "com.aqrlei.cachex.CacheModel.SCOPE_KEY"
+private const val CACHE_JOB_KEY = "com.aqrlei.cachex.CacheModel.JOB_KEY"
+
+private const val ACTIVE_RESOURCE_JOB_KEY = "com.aqrlei.cachex.lru.memory.ActiveResource.JOB_KEY"
+private const val ACTIVE_RESOURCE_SCOPE_KEY =
+    "com.aqrlei.cachex.lru.memory.ActiveResource.SCOPE_KEY"
 
 private val activeResourceDispatcher = Executors.newSingleThreadExecutor(ThreadFactory { r ->
     thread(
@@ -41,6 +45,14 @@ val CacheModel.cacheModelScope: CoroutineScope
         return setTagIfAbsent(SCOPE_KEY, CacheClosableScope(SupervisorJob() + Dispatchers.IO))
     }
 
+val CacheModel.cacheJob: CacheJob
+    get() {
+        val cacheJob: CacheJob? = this.getTag(CACHE_JOB_KEY)
+        if (cacheJob != null) return cacheJob
+
+        return setTagIfAbsent(CACHE_JOB_KEY, CoroutineCacheJob(cacheModelScope))
+    }
+
 /**
  * for ActiveResource
  */
@@ -55,11 +67,11 @@ val ActiveResource.activeResourceScope: CoroutineScope
 
 val ActiveResource.activeResourceJob: CacheJob
     get() {
-        val cacheJob: CacheJob? = this.getTag(CACHE_JOB_KEY)
+        val cacheJob: CacheJob? = this.getTag(ACTIVE_RESOURCE_JOB_KEY)
 
         if (cacheJob != null) return cacheJob
 
-        return setTagIfAbsent(CACHE_JOB_KEY, CoroutineCacheJob(activeResourceScope))
+        return setTagIfAbsent(ACTIVE_RESOURCE_JOB_KEY, CoroutineCacheJob(activeResourceScope))
     }
 
 internal class CacheClosableScope(context: CoroutineContext) : CoroutineScope, Closeable {
@@ -73,13 +85,19 @@ internal class CacheClosableScope(context: CoroutineContext) : CoroutineScope, C
 
 internal class CoroutineCacheJob(
     private val scope: CoroutineScope) : CacheJob() {
-    private var backgroundBlock: (() -> Unit)? = null
+    private val backgroundTaskList = ArrayList<ITaskBackground?>()
+    private var coroutineJobList = ArrayList<Job>()
     override fun start() {
         scope.launch {
             try {
-                backgroundBlock?.invoke()
+                for (backgroundTask in backgroundTaskList) {
+                    val job = launch {
+                        backgroundTask?.doInBackground()
+                    }
+                    coroutineJobList.add(job)
+                }
             } catch (e: CancellationException) {
-                e.printStackTrace() // todo
+                e.printStackTrace()
             }
         }
     }
@@ -88,7 +106,16 @@ internal class CoroutineCacheJob(
         scope.cancel()
     }
 
-    override fun setBackgroundBlock(block: () -> Unit) {
-        backgroundBlock = block
+    override fun setBackgroundBlock(vararg iTaskBackground: ITaskBackground) {
+        clearPreviousJob()
+        backgroundTaskList.addAll(iTaskBackground)
+    }
+
+    private fun clearPreviousJob() {
+        coroutineJobList.filter { it.isActive }.forEach {
+            it.cancel()
+        }
+        coroutineJobList.clear()
+        backgroundTaskList.clear()
     }
 }

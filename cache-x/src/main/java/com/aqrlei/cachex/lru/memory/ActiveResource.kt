@@ -1,6 +1,7 @@
 package com.aqrlei.cachex.lru.memory
 
 import com.aqrlei.cachex.CacheModel
+import com.aqrlei.cachex.ITaskBackground
 import com.aqrlei.cachex.Key
 import com.aqrlei.cachex.activeResourceJob
 import java.lang.ref.ReferenceQueue
@@ -20,9 +21,9 @@ class ActiveResource private constructor() : CacheModel() {
     private var listener: ByteResource.ResourceListener? = null
 
     init {
-        activeResourceJob.setBackgroundBlock {
+        activeResourceJob.setBackgroundBlock(ITaskBackground {
             cleanReferenceQueue()
-        }
+        })
         activeResourceJob.start()
     }
 

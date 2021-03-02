@@ -10,7 +10,6 @@ abstract class CacheModel  {
 
     protected val bagOfTags = hashMapOf<String, Any>()
 
-
     @Volatile
     protected var isClear: Boolean = false
 

@@ -10,27 +10,30 @@ import com.aqrlei.cachex.lru.memory.cache.LruResourceCache
 class Engine(
     private val activeResource: ActiveResource,
     private val cache: LruResourceCache
-) : ByteResource.ResourceListener {
-
+) : ByteResource.ResourceListener, CacheModel() {
 
     override fun onResourceReleased(key: Key, resource: ByteResource) {
         activeResource.deactivate(key)
         if (resource.isMemoryCacheable) {
             cache.put(key, resource)
-        }else {
-            //todo  recycler
         }
     }
 
-    fun load(key: Key) : Any? {
+    fun load(
+        key: Key,
+
+        callback: ResourceCallback): Any? {
         val memoryResource: ByteResource?
         synchronized(this) {
             memoryResource = loadFromMemory(key)
-            if (memoryResource == null){
-                //TODO background loadFromDisk or FromOtherChannel
+            if (memoryResource == null) {
+                cacheJob.setBackgroundBlock()
+                cacheJob.start()
+                return null
             }
         }
-        //TODO callback
+
+        callback.onResourceReady(memoryResource!!, DataResource.MEMORY_CACHE)
         return null
     }
 
@@ -54,5 +57,4 @@ class Engine(
         }
         return cached
     }
-
 }

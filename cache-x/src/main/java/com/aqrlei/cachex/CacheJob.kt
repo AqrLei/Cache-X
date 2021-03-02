@@ -11,5 +11,5 @@ interface ICacheJob : Closeable{
 
 abstract class CacheJob: ICacheJob {
 
-    abstract fun setBackgroundBlock(block: () -> Unit)
+    abstract fun setBackgroundBlock(vararg iTaskBackground: ITaskBackground)
 }
