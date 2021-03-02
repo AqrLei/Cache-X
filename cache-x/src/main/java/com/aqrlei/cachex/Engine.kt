@@ -27,7 +27,7 @@ class Engine(
         synchronized(this) {
             memoryResource = loadFromMemory(key)
             if (memoryResource == null){
-                //TODO return
+                //TODO background loadFromDisk or FromOtherChannel
             }
         }
         //TODO callback

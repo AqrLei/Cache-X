@@ -34,30 +34,21 @@ tasks.withType(Javadoc) {//防止编码问题
 afterEvaluate {
     publishing {
         publications {
-            release(MavenPublication) {
-                from components.release
+            coroutineRelease(MavenPublication) {
+                from components.coroutineRelease
 
                 artifact(sourcesJar)
                 artifact(dokkaJar)
-
-                pom {
-                    packaging 'aar'
-
-                    licenses {
-                        license {
-                            name = 'The Apache License, Version 2.0'
-                            url = 'http://www.apache.org/licenses/LICENSE-2.0.txt'
-                        }
-                    }
-                    developers {
-                        developer {
-                            id = 'AqrLei'
-                            name = 'AqrLei'
-                            email = 'aqrdeveloper@gmail.com'
-                        }
-                    }
-                }
             }
+            
+            threadRelease(MavenPublication) {
+                from components.threadRelease
+
+                artifact(sourcesJar)
+                artifact(dokkaJar)
+            }
+
+
 
         }
 

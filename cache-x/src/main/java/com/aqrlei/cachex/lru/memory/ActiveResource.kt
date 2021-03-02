@@ -1,58 +1,43 @@
 package com.aqrlei.cachex.lru.memory
 
-import android.os.Process
+import com.aqrlei.cachex.CacheModel
 import com.aqrlei.cachex.Key
+import com.aqrlei.cachex.util.CoroutineUtil
+import kotlinx.coroutines.*
 import java.lang.ref.ReferenceQueue
-import java.util.concurrent.Executor
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.ThreadFactory
-import kotlin.concurrent.thread
 
 /**
  * created by AqrLei on 2/26/21
  * 活动缓存
  */
-class ActiveResource private constructor(private val monitorClearedResourcesExecutor: Executor) {
+class ActiveResource private constructor() : CacheModel() {
 
     companion object {
-        fun newInstance(): ActiveResource {
-            return ActiveResource(
-                Executors.newSingleThreadExecutor(
-                ThreadFactory { r ->
-                    thread(
-                        start = false,
-                        name = "cache-active-resources",
-                        priority = Process.THREAD_PRIORITY_BACKGROUND
-                    ) {
-                        r.run()
-                    }
-                }
-            ))
-        }
+        fun newInstance() = ActiveResource()
     }
 
     private val resourceReferenceQueue = ReferenceQueue<ByteResource>()
     private val activeResources = hashMapOf<Key, ByteResourceWeakReference>()
     private var listener: ByteResource.ResourceListener? = null
 
-    @Volatile
-    private var isShutdown: Boolean = false
+    private val job: Job = GlobalScope.launch(
+        context = CoroutineUtil.getActiveResourceCoroutineContext("cache-active_resources"),
+        start = CoroutineStart.LAZY
+    ) {
+        cleanReferenceQueue()
+    }
 
     init {
-        monitorClearedResourcesExecutor.execute {
-            cleanReferenceQueue()
-        }
+        job.start()
     }
 
     private fun cleanReferenceQueue() {
-        while (!isShutdown) {
+        while (!isClear) {
             try {
                 val ref = resourceReferenceQueue.remove() as? ByteResourceWeakReference
                 ref?.let { cleanupActiveReference(it) }
+            } catch (e: CancellationException) {
 
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
             }
         }
     }
@@ -65,13 +50,12 @@ class ActiveResource private constructor(private val monitorClearedResourcesExec
             }
         }
         val newResource = ByteResource(ref.key, ref.resource!!, true)
-        //TODO 存到LruCache缓存里去
         listener?.onResourceReleased(ref.key, newResource)
     }
 
     fun setListener(listener: ByteResource.ResourceListener) {
         synchronized(listener) {
-            synchronized(this){
+            synchronized(this) {
                 this.listener = listener
             }
         }
@@ -108,9 +92,11 @@ class ActiveResource private constructor(private val monitorClearedResourcesExec
     }
 
     fun shutdown() {
-        isShutdown = true
-       if (monitorClearedResourcesExecutor is ExecutorService){
-           com.aqrlei.cachex.util.Executors.shutdownAndAwaitTermination(monitorClearedResourcesExecutor)
-       }
+        isClear = true
+        synchronized(bagOfTags) {
+            for (value in bagOfTags.values) {
+                close(value)
+            }
+        }
     }
 }

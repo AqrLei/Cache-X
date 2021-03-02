@@ -14,7 +14,7 @@ class ByteResource(
 
     fun getResource() = byteArray
 
-    interface  ResourceListener {
+    fun interface  ResourceListener {
         fun onResourceReleased(key:Key, resource: ByteResource)
     }
 }
