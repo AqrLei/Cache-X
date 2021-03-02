@@ -1,7 +1,14 @@
 package com.aqrlei.cachex
 
 import android.os.Process
-import kotlinx.coroutines.*
+import com.aqrlei.cachex.lru.memory.ActiveResource
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import java.io.Closeable
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
@@ -12,7 +19,9 @@ import kotlin.coroutines.CoroutineContext
  * created by AqrLei on 3/1/21
  */
 
-private const val JOB_KEY = "com.aqrlei.cachex.CacheModel.JOB_KEY"
+private const val SCOPE_KEY = "com.aqrlei.cachex.CacheModel.JOB_KEY"
+private const val CACHE_JOB_KEY = "com.aqrlei.cachex.CacheModel.CACHE_JOB_KEY"
+private const val ACTIVE_RESOURCE_SCOPE_KEY = "com.aqrlei.cachex.lru.memory.ActiveResource.JOB_KEY"
 
 private val activeResourceDispatcher = Executors.newSingleThreadExecutor(ThreadFactory { r ->
     thread(
@@ -21,16 +30,36 @@ private val activeResourceDispatcher = Executors.newSingleThreadExecutor(ThreadF
         priority = Process.THREAD_PRIORITY_BACKGROUND) { r.run() }
 }).asCoroutineDispatcher()
 
-
 /**
  * default
  */
 val CacheModel.cacheModelScope: CoroutineScope
     get() {
-        val scope: CoroutineScope? = this.getTag(JOB_KEY)
+        val scope: CoroutineScope? = this.getTag(SCOPE_KEY)
         if (scope != null) return scope
 
-        return setTagIfAbsent(JOB_KEY, CacheClosableScope(SupervisorJob() + Dispatchers.IO))
+        return setTagIfAbsent(SCOPE_KEY, CacheClosableScope(SupervisorJob() + Dispatchers.IO))
+    }
+
+/**
+ * for ActiveResource
+ */
+val ActiveResource.activeResourceScope: CoroutineScope
+    get() {
+        val scope: CoroutineScope? = this.getTag(ACTIVE_RESOURCE_SCOPE_KEY)
+        if (scope != null) return scope
+        return setTagIfAbsent(
+            ACTIVE_RESOURCE_SCOPE_KEY,
+            CacheClosableScope(SupervisorJob() + activeResourceDispatcher))
+    }
+
+val ActiveResource.activeResourceJob: CacheJob
+    get() {
+        val cacheJob: CacheJob? = this.getTag(CACHE_JOB_KEY)
+
+        if (cacheJob != null) return cacheJob
+
+        return setTagIfAbsent(CACHE_JOB_KEY, CoroutineCacheJob(activeResourceScope))
     }
 
 internal class CacheClosableScope(context: CoroutineContext) : CoroutineScope, Closeable {
@@ -42,13 +71,24 @@ internal class CacheClosableScope(context: CoroutineContext) : CoroutineScope, C
     }
 }
 
-class CoroutineCacheJob(private val scope: CoroutineScope,
-                        block: ()-> Unit): CacheJob(block) {
+internal class CoroutineCacheJob(
+    private val scope: CoroutineScope) : CacheJob() {
+    private var backgroundBlock: (() -> Unit)? = null
     override fun start() {
         scope.launch {
-            backgroundBlock.invoke()
+            try {
+                backgroundBlock?.invoke()
+            } catch (e: CancellationException) {
+                e.printStackTrace() // todo
+            }
         }
     }
+
+    override fun close() {
+        scope.cancel()
+    }
+
+    override fun setBackgroundBlock(block: () -> Unit) {
+        backgroundBlock?.invoke()
+    }
 }
-
-

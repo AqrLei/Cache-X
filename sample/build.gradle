@@ -29,6 +29,5 @@ dependencies {
     implementation deps.android.ktx
     implementation deps.android.appcompat
     implementation deps.android.constraintlayout
-    implementation deps.glide
 
 }

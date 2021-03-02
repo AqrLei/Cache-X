@@ -31,9 +31,10 @@ android {
 
 dependencies {
     implementation fileTree(dir: "libs", include: ["*.jar"])
-    implementation deps.kotlin.stdlib
-    implementation deps.android.appcompat
-    coroutineImplementation deps.kotlin.coroutine
+    api deps.android.appcompat
+
+    api deps.kotlin.stdlib
+    coroutineApi deps.kotlin.coroutine
 }
 
 apply from: rootProject.file("gradle/maven_publish.gradle")

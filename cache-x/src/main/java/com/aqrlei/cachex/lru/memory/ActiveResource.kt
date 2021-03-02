@@ -2,8 +2,8 @@ package com.aqrlei.cachex.lru.memory
 
 import com.aqrlei.cachex.CacheModel
 import com.aqrlei.cachex.Key
-import com.aqrlei.cachex.util.CoroutineUtil
-import kotlinx.coroutines.*
+import com.aqrlei.cachex.activeResourceJob
+import kotlinx.coroutines.CancellationException
 import java.lang.ref.ReferenceQueue
 
 /**
@@ -20,15 +20,11 @@ class ActiveResource private constructor() : CacheModel() {
     private val activeResources = hashMapOf<Key, ByteResourceWeakReference>()
     private var listener: ByteResource.ResourceListener? = null
 
-    private val job: Job = GlobalScope.launch(
-        context = CoroutineUtil.getActiveResourceCoroutineContext("cache-active_resources"),
-        start = CoroutineStart.LAZY
-    ) {
-        cleanReferenceQueue()
-    }
-
     init {
-        job.start()
+        activeResourceJob.setBackgroundBlock {
+            cleanReferenceQueue()
+        }
+        activeResourceJob.start()
     }
 
     private fun cleanReferenceQueue() {
