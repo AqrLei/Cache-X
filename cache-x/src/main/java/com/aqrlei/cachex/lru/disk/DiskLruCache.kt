@@ -766,8 +766,7 @@ class DiskLruCache private constructor(
                     written?.set(index, true)
                 }
                 val dirtyFile = entry.getDirtyFile(index)
-                val outputStream: FileOutputStream
-                outputStream = try {
+                val outputStream: FileOutputStream = try {
                     FileOutputStream(dirtyFile)
                 } catch (e: FileNotFoundException) {
                     // Attempt to recreate the cache directory.

@@ -1,9 +1,10 @@
 package com.aqrlei.cachex.lru.disk
 
+import com.aqrlei.cachex.Key
+import com.aqrlei.cachex.lru.memory.ByteResource
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.IOException
-import java.io.Writer
-import java.security.Key
 
 /**
  * created by AqrLei on 3/2/21
@@ -11,13 +12,16 @@ import java.security.Key
 //TODO
 class DiskLruCacheWrapper(
     private val directory: File,
-    private val maxSize: Long) {
+    private val maxSize: Long) : DiskCache{
     companion object {
         private const val APP_VERSION = 1
         private const val VALUE_COUNT = 1
+
+        fun create(directory: File, maxSize: Long) = DiskLruCacheWrapper(directory, maxSize)
     }
 
     private var diskLruCache: DiskLruCache? = null
+    private val writeLocker = DiskCacheWriteLocker()
 
     @Throws(IOException::class)
     @Synchronized
@@ -28,12 +32,23 @@ class DiskLruCacheWrapper(
         return diskLruCache!!
     }
 
+    override fun get(key: Key): ByteArray? {
+        val safeKey = key.toString()
+        var result: ByteArray? = null
+        try {
+            val value = getDiskCache().get(safeKey)
+            result = value?.getInputStream(0)?.readBytes()
+        } catch (e: IOException) {
+            // log
+        }
+        return result
+    }
 
-    fun put(key: Key, writer: Writer){
+    override fun put(key: Key, resource: ByteResource) {
         // safeKey
         val safeKey = key.toString()
 
-        // writeLocker.acquire(safeKey)
+        writeLocker.acquire(safeKey)
         try {
             try {
                 val diskCache = getDiskCache()
@@ -42,48 +57,47 @@ class DiskLruCacheWrapper(
 
                 val editor = diskCache.edit(safeKey)
                     ?: throw IllegalStateException("Had two simultaneous puts for: $safeKey")
-
-                try {
-                    val file = editor
-                }finally {
-                    editor.commit()
+                editor.newOutputStream(0).run {
+                    val bufferOut = BufferedOutputStream(this)
+                    try {
+                        bufferOut.write(resource.getResource())
+                        editor.commit()
+                    } finally {
+                        editor.abortUnlessCommitted()
+                        bufferOut.close()
+                    }
                 }
-            }catch (e: IOException) {
+            } catch (e: IOException) {
                 //LOG
             }
-
-        }finally {
-            //writeLocker.release(safeKey)
+        } finally {
+            writeLocker.release(safeKey)
         }
-
-
     }
 
-
-    fun delete(key: Key){
+    override fun delete(key: Key) {
         // safeKey
         val safeKey = key.toString()
         try {
-           getDiskCache().remove(safeKey)
-        }catch (e: IOException){
+            getDiskCache().remove(safeKey)
+        } catch (e: IOException) {
             // log
         }
     }
 
     @Synchronized
-    fun clear() {
+    override fun clear() {
         try {
             getDiskCache().delete()
-        }catch (e: IOException){
+        } catch (e: IOException) {
             //log
-        }finally {
+        } finally {
             resetDiskCache()
         }
     }
 
     @Synchronized
-    private fun resetDiskCache(){
+    private fun resetDiskCache() {
         diskLruCache = null
     }
-
 }
