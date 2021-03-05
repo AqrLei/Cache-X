@@ -1,10 +1,14 @@
-package com.aqrlei.cachex
+package com.aqrlei.cachex.load
 
+import com.aqrlei.cachex.CacheModel
+import com.aqrlei.cachex.ITaskBackground
+import com.aqrlei.cachex.Key
+import com.aqrlei.cachex.cacheJob
 import com.aqrlei.cachex.lru.disk.DiskCache
 import com.aqrlei.cachex.lru.memory.ActiveResource
 import com.aqrlei.cachex.lru.memory.ByteResource
 import com.aqrlei.cachex.lru.memory.cache.LruResourceCache
-import com.aqrlei.cachex.util.mainHandler
+import com.aqrlei.cachex.mainHandler
 
 /**
  * created by AqrLei on 2/27/21
@@ -13,8 +17,11 @@ class Engine(
     private val activeResource: ActiveResource,
     private val cache: LruResourceCache,
     private val diskCache: DiskCache
-) : ByteResource.ResourceListener, CacheModel() {
+) : CacheModel(), ByteResource.ResourceListener, ICacheEngine {
 
+    init {
+        activeResource.setListener(this)
+    }
     override fun onResourceReleased(key: Key, resource: ByteResource) {
         activeResource.deactivate(key)
         if (resource.isMemoryCacheable) {
@@ -22,7 +29,7 @@ class Engine(
         }
     }
 
-    fun load(
+    override fun load(
         key: Key,
         callback: ResourceCallback,
         isMemoryCacheable: Boolean
@@ -38,10 +45,17 @@ class Engine(
         return null
     }
 
+    override fun put(key: Key, byteArray: ByteArray, isMemoryCacheable: Boolean) {
+        val resource = ByteResource(key, byteArray, isMemoryCacheable)
+        diskCache.put(key, resource)
+        activeResource.activate(key, resource)
+    }
+
     private fun loadFromDisk(
         key: Key,
         callback: ResourceCallback,
-        isMemoryCacheable: Boolean): Any? {
+        isMemoryCacheable: Boolean
+    ): Any? {
         cacheJob.setBackgroundBlock(ITaskBackground {
             val diskCacheValue = diskCache.get(key)
             if (diskCacheValue == null) {
@@ -50,6 +64,7 @@ class Engine(
                 }
             } else {
                 val diskResource = ByteResource(key, diskCacheValue, isMemoryCacheable)
+                activeResource.activate(key, diskResource)
                 mainHandler.post {
                     callback.onResourceReady(diskResource, DataResource.DISK_CACHE)
                 }

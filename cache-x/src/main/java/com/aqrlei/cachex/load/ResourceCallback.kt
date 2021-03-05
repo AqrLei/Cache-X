@@ -1,4 +1,4 @@
-package com.aqrlei.cachex
+package com.aqrlei.cachex.load
 
 import com.aqrlei.cachex.lru.memory.ByteResource
 
